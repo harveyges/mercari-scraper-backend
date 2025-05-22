@@ -1,74 +1,84 @@
+// /api/scrape.js
+
 import puppeteer from 'puppeteer';
 
-const BROWSERLESS_URL = process.env.BROWSERLESS_URL;
+const BROWSERLESS_URL = process.env.BROWSERLESS_URL; // Set this in Vercel!
 
 export default async function handler(req, res) {
+  // --- CORS HEADERS ---
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   const { url } = req.query;
-  if (!url) return res.status(400).json({ error: 'No URL provided' });
+  if (!url) {
+    return res.status(400).json({ error: 'No URL provided' });
+  }
 
   let browser;
   try {
     browser = await puppeteer.connect({
       browserWSEndpoint: BROWSERLESS_URL,
     });
+
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-    // TITLE
-    const itemTitle = await page.$eval('h1', el => el.textContent.trim());
-
-    // PRICE
-    const price = await page.$eval('meta[name="product:price:amount"]', el => el.content);
-
-    // FIRST IMAGE
-    const firstImage = await page.$eval('meta[property="og:image"]', el => el.content);
-
-    // ITEM DESCRIPTION (from JSON-LD script)
-    const jsonLd = await page.$$eval('script[type="application/ld+json"]', els => {
-      for (const el of els) {
-        try {
-          const data = JSON.parse(el.textContent);
-          if (data['@type'] === 'Product') return data;
-        } catch (e) {}
-      }
-      return null;
+    // 1. Get the full <script type="application/ld+json">
+    const ldJson = await page.$$eval('script[type="application/ld+json"]', scripts => {
+      // Find the first script that contains '"@type":"Product"'
+      const script = scripts.find(s => s.innerText.includes('"@type":"Product"'));
+      return script ? script.innerText : '';
     });
 
-    const description = jsonLd?.description || null;
-
-    // SELLER INFO (from JSON-LD, fallback to null)
-    // (Mercari often doesn't expose full seller info in HTML—will show sellerID if found)
-    let sellerName = null;
-    let sellerId = null;
-    if (jsonLd && jsonLd.offers && jsonLd.offers.seller) {
-      sellerName = jsonLd.offers.seller.name || null;
-      sellerId = jsonLd.offers.seller['@id'] || null;
+    let product = {};
+    if (ldJson) {
+      try {
+        const data = JSON.parse(ldJson);
+        product = data;
+      } catch {}
     }
 
-    // ITEM STATUS (available or sold out)
-    let itemStatus = 'unknown';
-    if (jsonLd && jsonLd.offers && jsonLd.offers.availability) {
-      if (jsonLd.offers.availability.includes('SoldOut')) {
-        itemStatus = 'sold_out';
-      } else if (jsonLd.offers.availability.includes('InStock')) {
-        itemStatus = 'available';
-      }
+    // 2. Title
+    let title = product.name || await page.$eval('h1', el => el.textContent.trim()).catch(() => '');
+
+    // 3. Price
+    let price = (product.offers && product.offers.price) || await page.$eval('meta[name="product:price:amount"]', el => el.content).catch(() => '');
+
+    // 4. First Image
+    let firstImage = '';
+    if (Array.isArray(product.image) && product.image[0]) {
+      firstImage = product.image[0];
     }
+
+    // 5. Description
+    let description = product.description || '';
+
+    // 6. Item Status
+    let itemStatus = (product.offers && product.offers.availability) || '';
+    itemStatus = itemStatus.includes('SoldOut') ? 'sold_out' : 'available';
+
+    // 7. Seller info (Mercari doesn't always provide this publicly)
+    let sellerName = product.seller && product.seller.name ? product.seller.name : null;
+    let sellerId = product.seller && product.seller['@id'] ? product.seller['@id'] : null;
 
     await browser.close();
 
     return res.status(200).json({
-      title: itemTitle,
+      title,
       price,
       firstImage,
       description,
+      itemStatus,
       sellerName,
       sellerId,
-      itemStatus,
     });
 
   } catch (err) {
-    if (browser) await browser.close();
+    if (browser) try { await browser.close(); } catch {}
     return res.status(500).json({ error: err.message });
   }
 }
