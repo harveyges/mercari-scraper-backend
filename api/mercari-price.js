@@ -15,10 +15,10 @@ export default async function handler(req, res) {
 
   try {
     const response = await axios.get(
-      `http://api.scraperapi.com?api_key=082f5b7af0eed4ff9c3b756a8b81af44&url=${encodeURIComponent(url)}`,
+      `http://api.scraperapi.com?api_key=YOUR_API_KEY&url=${encodeURIComponent(url)}`,
       {
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
       }
     );
