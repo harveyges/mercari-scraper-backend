@@ -1,42 +1,39 @@
-import axios from "axios";
-import * as cheerio from "cheerio";
+// pages/api/mercari-price.js
+import axios from 'axios';
+import cheerio from 'cheerio';
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const { url } = req.body;
   if (!url) {
-    res.status(400).json({ error: "No URL provided" });
-    return;
+    return res.status(400).json({ error: 'Missing URL' });
   }
 
+  const SCRAPERAPI_KEY = '082f5b7af0eed4ff9c3b756a8b81af44'; // <-- insert your key here
+  const scraperApiUrl = `http://api.scraperapi.com/?api_key=${SCRAPERAPI_KEY}&url=${encodeURIComponent(url)}&render=true`;
+
   try {
-    const response = await axios.get(
-      `http://api.scraperapi.com?api_key=082f5b7af0eed4ff9c3b756a8b81af44&url=${encodeURIComponent(url)}`,
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-      }
-    );
-    const html = response.data;
-    console.log(html); // DEBUG: print fetched HTML to Vercel function logs
+    // 1. Get HTML using ScraperAPI with render=true
+    const { data: html } = await axios.get(scraperApiUrl);
+
+    // 2. Load into Cheerio
     const $ = cheerio.load(html);
 
-    // Try meta first, fallback to price div
-    const price =
-      $("meta[property='product:price:amount']").attr("content") ||
-      $("div[data-testid='price']").text().replace(/[^\d]/g, "");
+    // 3. Try to extract price (adjust selector as needed)
+    // Mercari price is usually in a span with data-testid="price"
+    let price = $('[data-testid="price"]').first().text().trim();
 
-    if (price) {
-      res.status(200).json({ price });
-    } else {
-      res.status(200).json({ price: "Not Found" });
+    // Fallback selector: try common class names if above fails
+    if (!price) {
+      price = $('span[class*=price], div[class*=price]').first().text().trim();
     }
-  } catch (err) {
-    res.status(500).json({ price: "Error", error: err.message });
+
+    // 4. Return result
+    res.status(200).json({ price: price || 'Not Found' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 }
