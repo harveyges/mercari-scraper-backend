@@ -1,27 +1,11 @@
+// /api/scrape.js
+
 import puppeteer from 'puppeteer';
 
 const BROWSERLESS_URL = process.env.BROWSERLESS_URL; // Set this in Vercel!
 
-// Helper: limit concurrency
-async function asyncPool(poolLimit, array, iteratorFn) {
-  const ret = [];
-  const executing = [];
-  for (const item of array) {
-    const p = Promise.resolve().then(() => iteratorFn(item));
-    ret.push(p);
-
-    if (poolLimit <= array.length) {
-      const e = p.then(() => executing.splice(executing.indexOf(e), 1));
-      executing.push(e);
-      if (executing.length >= poolLimit) {
-        await Promise.race(executing);
-      }
-    }
-  }
-  return Promise.all(ret);
-}
-
 export default async function handler(req, res) {
+  // --- CORS HEADERS ---
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -29,31 +13,34 @@ export default async function handler(req, res) {
     res.status(200).end();
     return;
   }
-
   if (req.method !== 'POST') {
-    res.status(405).json({ error: 'POST only' });
+    res.status(405).json({ error: 'Method Not Allowed' });
     return;
   }
 
-  let urls;
-  try {
-    urls = req.body.urls || [];
-    if (!Array.isArray(urls) || urls.length === 0) throw new Error('No URLs provided');
-  } catch {
-    return res.status(400).json({ error: 'Invalid body or missing urls' });
+  const { urls } = req.body;
+  if (!urls || !Array.isArray(urls) || !urls.length) {
+    return res.status(400).json({ error: 'No urls provided' });
   }
 
   let browser;
   try {
-    browser = await puppeteer.connect({ browserWSEndpoint: BROWSERLESS_URL });
+    browser = await puppeteer.connect({
+      browserWSEndpoint: BROWSERLESS_URL,
+    });
 
-    const scrape = async (url) => {
-      let result = { url };
+    // Concurrency control
+    const concurrency = 2;
+    const results = [];
+    let idx = 0;
+
+    async function scrapeMercari(url) {
+      const result = { url, title: '', price: '', firstImage: '', itemStatus: '', sellerName: null, sellerId: null };
       try {
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-        // 1. Get the full <script type="application/ld+json">
+        // 1. Get the <script type="application/ld+json">
         const ldJson = await page.$$eval('script[type="application/ld+json"]', scripts => {
           const script = scripts.find(s => s.innerText.includes('"@type":"Product"'));
           return script ? script.innerText : '';
@@ -66,21 +53,33 @@ export default async function handler(req, res) {
           } catch {}
         }
 
-        // Title
-        result.title = product.name || await page.$eval('h1', el => el.textContent.trim()).catch(() => '');
+        // 2. Title
+        result.title = product.name || (await page.$eval('h1', el => el.textContent.trim()).catch(() => ''));
 
-        // Price
-        result.price = (product.offers && product.offers.price) || 
-            await page.$eval('meta[name="product:price:amount"]', el => el.content).catch(() => '');
+        // 3. Price
+        result.price =
+          (product.offers && product.offers.price) ||
+          (await page.$eval('meta[name="product:price:amount"]', el => el.content).catch(() => ''));
 
-        // First Image
-        result.firstImage = (Array.isArray(product.image) && product.image[0]) ? product.image[0] : '';
+        // 4. First Image
+        if (product.image) {
+          if (Array.isArray(product.image) && product.image[0]) {
+            result.firstImage = product.image[0];
+          } else if (typeof product.image === 'string') {
+            result.firstImage = product.image;
+          } else {
+            result.firstImage = '';
+          }
+        } else {
+          // Fallback: find first product image from known img selectors
+          result.firstImage = await page.$eval('img[src*="static.mercdn.net/item/detail"]', img => img.src).catch(() => '');
+        }
 
-        // Status
+        // 5. Status
         let itemStatus = (product.offers && product.offers.availability) || '';
         result.itemStatus = itemStatus.includes('SoldOut') ? 'sold_out' : 'available';
 
-        // Seller Info (Mercari rarely provides this)
+        // 6. Seller info
         result.sellerName = product.seller && product.seller.name ? product.seller.name : null;
         result.sellerId = product.seller && product.seller['@id'] ? product.seller['@id'] : null;
 
@@ -89,13 +88,32 @@ export default async function handler(req, res) {
         result.error = err.message;
       }
       return result;
-    };
+    }
 
-    // Run in batch with concurrency = 2
-    const results = await asyncPool(2, urls, scrape);
+    // Batch with concurrency
+    async function batchScrape(urls, concurrency) {
+      const results = [];
+      let i = 0;
+      async function next() {
+        if (i >= urls.length) return;
+        const currentIdx = i++;
+        results[currentIdx] = await scrapeMercari(urls[currentIdx]);
+        await next();
+      }
+      // Launch concurrent runners
+      const runners = [];
+      for (let k = 0; k < concurrency && k < urls.length; k++) {
+        runners.push(next());
+      }
+      await Promise.all(runners);
+      return results;
+    }
+
+    const scrapeResults = await batchScrape(urls, concurrency);
 
     await browser.close();
-    return res.status(200).json({ results });
+
+    return res.status(200).json({ results: scrapeResults });
 
   } catch (err) {
     if (browser) try { await browser.close(); } catch {}
