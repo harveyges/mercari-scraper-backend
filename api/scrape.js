@@ -2,7 +2,7 @@
 
 import puppeteer from 'puppeteer';
 
-const BROWSERLESS_URL = process.env.BROWSERLESS_URL; // Set this in Vercel!
+const BROWSERLESS_URL = process.env.BROWSERLESS_URL; // Set this in Vercel Environment Variables
 
 export default async function handler(req, res) {
   // --- CORS HEADERS ---
@@ -27,9 +27,8 @@ export default async function handler(req, res) {
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-    // 1. Get the full <script type="application/ld+json">
+    // --- 1. Get product data from <script type="application/ld+json">
     const ldJson = await page.$$eval('script[type="application/ld+json"]', scripts => {
-      // Find the first script that contains '"@type":"Product"'
       const script = scripts.find(s => s.innerText.includes('"@type":"Product"'));
       return script ? script.innerText : '';
     });
@@ -37,36 +36,42 @@ export default async function handler(req, res) {
     let product = {};
     if (ldJson) {
       try {
-        const data = JSON.parse(ldJson);
-        product = data;
+        product = JSON.parse(ldJson);
       } catch {}
     }
 
-    // 2. Title
+    // --- 2. Title
     let title = product.name || await page.$eval('h1', el => el.textContent.trim()).catch(() => '');
 
-    // 3. Price
-    let price = (product.offers && product.offers.price) || await page.$eval('meta[name="product:price:amount"]', el => el.content).catch(() => '');
+    // --- 3. Price
+    let price = (product.offers && product.offers.price) ||
+                await page.$eval('meta[name="product:price:amount"]', el => el.content).catch(() => '');
 
-    // 4. First Image
+    // --- 4. First Image (robust logic)
     let firstImage = '';
     if (Array.isArray(product.image) && product.image[0]) {
       firstImage = product.image[0];
+    } else {
+      // Fallback: grab first Mercari product image
+      firstImage = await page
+        .$eval('img[alt][src^="https://static.mercdn.net/item/detail/orig/photos/"]', el => el.src)
+        .catch(() => '');
     }
 
-    // 5. Description
+    // --- 5. Description
     let description = product.description || '';
 
-    // 6. Item Status
+    // --- 6. Item Status
     let itemStatus = (product.offers && product.offers.availability) || '';
     itemStatus = itemStatus.includes('SoldOut') ? 'sold_out' : 'available';
 
-    // 7. Seller info (Mercari doesn't always provide this publicly)
+    // --- 7. Seller Info (Mercari may hide this)
     let sellerName = product.seller && product.seller.name ? product.seller.name : null;
     let sellerId = product.seller && product.seller['@id'] ? product.seller['@id'] : null;
 
     await browser.close();
 
+    // --- 8. Respond with result
     return res.status(200).json({
       title,
       price,
