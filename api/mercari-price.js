@@ -1,34 +1,47 @@
-// pages/api/mercari-price.js
-const axios = require('axios');
-const cheerio = require('cheerio');
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
   }
-
-  const { url } = req.body;
-  if (!url) {
-    return res.status(400).json({ error: 'Missing URL' });
-  }
-
-  const SCRAPERAPI_KEY = '082f5b7af0eed4ff9c3b756a8b81af44'; // <-- insert your key here
-  const scraperApiUrl = `http://api.scraperapi.com/?api_key=${SCRAPERAPI_KEY}&url=${encodeURIComponent(url)}&render=true`;
 
   try {
-    const { data: html } = await axios.get(scraperApiUrl);
+    const { url } = req.body;
+    if (!url) {
+      res.status(400).json({ error: 'Missing url' });
+      return;
+    }
+
+    // Fetch the HTML of the page (pretend to be a browser)
+    const { data: html } = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36',
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+      },
+    });
+
+    // Load HTML with cheerio
     const $ = cheerio.load(html);
 
-    // Mercari price is often in a span[data-testid="price"]
-    let price = $('[data-testid="price"]').first().text().trim();
-
-    // Fallback selectors
+    // Try to find the price (Mercari uses <span> with data-testid or price class)
+    // You might need to inspect the Mercari page source, but this often works:
+    let price = $('[data-testid="item-price"]').text().trim();
     if (!price) {
       price = $('span[class*=price], div[class*=price]').first().text().trim();
     }
+    // Remove yen and commas
+    price = price.replace(/[^\d]/g, '');
 
-    res.status(200).json({ price: price || 'Not Found' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!price) {
+      res.status(404).json({ price: 'Not Found' });
+      return;
+    }
+
+    res.status(200).json({ price });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Unknown error' });
   }
 }
