@@ -14,12 +14,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await axios.get(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    });
+    const response = await axios.get(
+      `http://api.scraperapi.com?api_key=YOUR_API_KEY&url=${encodeURIComponent(url)}`,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+      }
+    );
     const html = response.data;
     console.log(html); // DEBUG: print fetched HTML to Vercel function logs
     const $ = cheerio.load(html);
