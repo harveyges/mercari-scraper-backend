@@ -14,7 +14,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Only accept POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -28,18 +27,19 @@ export default async function handler(req, res) {
   try {
     browser = await puppeteer.connect({ browserWSEndpoint: BROWSERLESS_URL });
 
+    // Concurrency = 2 (2 tabs at a time)
+    const concurrency = 2;
     const results = [];
 
-    // Scrape one by one for reliability (can make concurrent if desired)
-    for (const url of urls) {
+    // Helper to scrape single url
+    const scrapeUrl = async (url) => {
       let result = { url };
       let page;
-
       try {
         page = await browser.newPage();
         await page.goto(url, { waitUntil: 'networkidle0', timeout: 20000 });
 
-        // 1. Try to get JSON-LD Product data
+        // Try to get JSON-LD Product data
         const ldJson = await page.$$eval('script[type="application/ld+json"]', scripts => {
           const script = scripts.find(s => s.innerText.includes('"@type":"Product"'));
           return script ? script.innerText : '';
@@ -50,7 +50,7 @@ export default async function handler(req, res) {
           try { product = JSON.parse(ldJson); } catch {}
         }
 
-        // 2. Title
+        // Title
         let title = product.name || '';
         if (!title) {
           try {
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
           }
         }
 
-        // 3. Price
+        // Price
         let price = (product.offers && product.offers.price) || '';
         if (!price) {
           try {
@@ -70,21 +70,20 @@ export default async function handler(req, res) {
           }
         }
 
-        // 4. First image
+        // First image
         let firstImage = '';
         if (Array.isArray(product.image) && product.image.length > 0) {
           firstImage = product.image[0];
         }
 
-        // 5. Item status
+        // Item status
         let itemStatus = (product.offers && product.offers.availability) || '';
         itemStatus = itemStatus.includes('SoldOut') ? 'sold_out' : 'available';
 
-        // 6. Seller info (may be missing)
+        // Seller info (may be missing)
         let sellerName = product.seller && product.seller.name ? product.seller.name : null;
         let sellerId = product.seller && product.seller['@id'] ? product.seller['@id'] : null;
 
-        // Assign to result
         result.title = title;
         result.price = price;
         result.firstImage = firstImage;
@@ -104,13 +103,22 @@ export default async function handler(req, res) {
       } finally {
         if (page) await page.close();
       }
+      return result;
+    };
 
-      results.push(result);
+    // Batch with concurrency = 2
+    let pointer = 0;
+    while (pointer < urls.length) {
+      const batch = urls.slice(pointer, pointer + concurrency);
+      // Run 2 in parallel
+      const batchResults = await Promise.all(batch.map(scrapeUrl));
+      results.push(...batchResults);
+      pointer += concurrency;
     }
 
     await browser.close();
-
     return res.status(200).json({ results });
+
   } catch (err) {
     if (browser) try { await browser.close(); } catch {}
     return res.status(500).json({ error: err.message });
