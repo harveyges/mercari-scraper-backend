@@ -21,6 +21,7 @@ export default async function handler(req, res) {
       },
     });
     const html = response.data;
+    console.log(html); // DEBUG: print fetched HTML to Vercel function logs
     const $ = cheerio.load(html);
 
     // Try meta first, fallback to price div
