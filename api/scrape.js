@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     });
 
     // Concurrency control
-    const concurrency = 2;
+    const concurrency = 3;
     const results = [];
     let idx = 0;
 
